@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>kmotion minimal scene</title>
+<!--
+  MINIMAL SCENE TEMPLATE — copy this to start a new reel.
+
+  Rules:
+  1. render(t) must be a PURE function of t. No Date.now(), no Math.random().
+     Use KM.rng(seed) for randomness.
+  2. Set EVERY animated property on EVERY call (don't rely on previous state).
+  3. Keep all text inside the safe zone: x ∈ [60, 1020], y ∈ [250, 1570].
+-->
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 1080px; height: 1920px; overflow: hidden; background: var(--km-bg, #0A0A0B); }
+  body { font-family: var(--km-font-body, "Inter", system-ui, sans-serif); }
+  #stage { position: relative; width: 1080px; height: 1920px; overflow: hidden; }
+  #title {
+    position: absolute; left: 0; top: 700px; width: 1080px; text-align: center;
+    color: var(--km-ink, #FFFFFF);
+    font-family: var(--km-font-display, "Inter", sans-serif);
+    font-size: 120px; font-weight: 800; letter-spacing: -2px;
+    will-change: transform, opacity;
+  }
+  #sub {
+    position: absolute; left: 0; top: 880px; width: 1080px; text-align: center;
+    color: var(--km-accent, #FF3B30); font-size: 48px; font-weight: 600;
+    letter-spacing: 6px; text-transform: uppercase;
+  }
+</style>
+</head>
+<body>
+<div id="stage">
+  <div id="title">Hello world</div>
+  <div id="sub">kartefy-motion</div>
+</div>
+
+<script src="/__km/km-core.js"></script>
+<script src="/__km/km-runtime.js"></script>
+<script>
+(function () {
+  'use strict';
+  var DUR = 5;
+  var title = document.getElementById('title');
+  var sub = document.getElementById('sub');
+
+  function render(t) {
+    // Title: expoOut rise, opacity leads position (never a fade).
+    var k = KM.ease.expoOut(KM.seg(t, 0.3, 1.2));
+    title.style.transform = 'translateY(' + KM.lerp(140, 0, k).toFixed(2) + 'px)';
+    title.style.opacity = KM.seg(t, 0.3, 0.8).toFixed(3);
+
+    // Subtitle: simple fade + drift.
+    var sk = KM.seg(t, 1.2, 1.9);
+    sub.style.opacity = sk.toFixed(3);
+    sub.style.transform = 'translateY(' + KM.lerp(30, 0, KM.ease.sineOut(sk)).toFixed(2) + 'px)';
+
+    // Outro: settle (last 1s is dead still — good for the carry oracle).
+    if (t > DUR - 1) {
+      title.style.transform = 'translateY(0px)';
+      title.style.opacity = '1';
+      sub.style.transform = 'translateY(0px)';
+      sub.style.opacity = '1';
+    }
+  }
+
+  KM.createScene({
+    meta: { dur: DUR, fps: 30, width: 1080, height: 1920, seed: 1 },
+    render: render,
+    // Blur hint: farthest px any element travels in [t0, t1].
+    // The title moves ~140px in 0.9s; nothing else moves. Be honest.
+    motion: function (t0, t1) {
+      if (t1 < 0.3 || t0 > 1.9) return 0;
+      return 160;
+    }
+  });
+})();
+</script>
+</body>
+</html>
