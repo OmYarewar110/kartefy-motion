@@ -111,7 +111,7 @@ Style module shape: `{setup(stage,params)→state, update(state,t), enter(el,t,t
 ## lib/km-blur.js (Node, pure)
 
 `planBlur({t, fps, motionPx, cuts, maxSamples, dur})` → `{subTimes, samples, blurred, reason}` — validated inputs; `reason`: `'still'` | `'motion'` | `'cut-side'`.
-`blurFilter(K)` → FFmpeg `-vf` string (`tmix` average of K sub-frames).
+`blurFilter(K)` → FFmpeg `-vf` string: `tmix` sliding-average of K sub-frames + `select` decimation to N non-overlapping group averages + `setpts` re-time (v0.2.1: tmix alone does NOT collapse groups — select is required, else EPIPE).
 `expandCaptures(buffers, K)` → pads a short group to exactly K by repeating the last.
 
 ## lib/km-caption-plan.js (Node, pure)
