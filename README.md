@@ -109,7 +109,7 @@ same pixels, always. Everything (blur, dedup, determinism) depends on it.
 
 ```
 kmotion render <scene.html> [--fps 30] [--out reel.mp4]
-        [--width 1080] [--height 1920] [--crf 18]
+        [--width 1080] [--height 1920] [--crf 18] [--preset veryfast]
         [--blur] [--blur-samples 8] [--look NAME] [--style NAME] [--json]
 
 kmotion caption <video.mp4> --words words.json [--out out.mp4]
@@ -127,3 +127,14 @@ Design rationale: [../video-engine-research/ENGINE-DESIGN.md](../video-engine-re
 - Node.js ≥ 18, `ffmpeg` ≥ 6 (with libx264, zscale, tmix, loudnorm, drawtext),
   headless Chromium (`/opt/meta-chromium/chrome` or `KMOTION_CHROME` env).
 - `npm install` in this directory (only dependency: `puppeteer-core`).
+
+## Changelog
+
+- **v0.2.2** — Performance + readability. Render **~27% faster** (x264 preset
+  `medium`→`veryfast`, PSNR-verified transparent; page load `networkidle0`→
+  `domcontentloaded`, ~2s saved). `--preset` CLI flag + `KMOTION_PRESET` env.
+  `renderScene` returns per-phase `timings` (also in `--json` output).
+  Captions gain a readability **outline** (3px stroke + drop shadow, `strokePx`
+  opt) — legible over bright backgrounds.
+- **v0.2.1** — Fixed `--blur` EPIPE crash (tmix is a sliding average, not a
+  group collapse — `select` decimation + `setpts` re-time required).

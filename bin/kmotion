@@ -1,0 +1,387 @@
+#!/usr/bin/env node
+/* ============================================================================
+ * kmotion — CLI for the kartefy-motion engine.
+ *
+ * Phase 2 commands:
+ *   kmotion render <scene.html> [--fps 30] [--out reel.mp4]
+ *            [--width 1080] [--height 1920] [--crf 18] [--preset veryfast]
+ *            [--blur] [--blur-samples 8] [--look cyber] [--style glitch-cyber]
+ *            [--json]
+ *   kmotion caption <video.mp4> --words captions.json [--out captioned.mp4]
+ *            [--font /path/to.ttf] [--look cyber] [--json]
+ *   kmotion looks list [--json]
+ *   kmotion styles list [--json]
+ *
+ * Exit codes: 0 = success, 1 = error, 2 = quality-gate fail (verify).
+ * With --json, commands print a single JSON object to stdout (logs go to
+ * stderr), so agents can parse results reliably.
+ * ========================================================================== */
+'use strict';
+
+const path = require('path');
+const fs = require('fs');
+const os = require('os');
+const { spawn } = require('child_process');
+const { renderScene, resolveLook } = require('../lib/km-engine');
+const { groupPages, normalizeInput } = require('../lib/km-caption-plan');
+
+const VERSION = '0.2.2';
+
+function usage(exitCode) {
+  console.log(
+    'kmotion ' + VERSION + ' — kartefy-motion engine\n' +
+    '\n' +
+    'Usage:\n' +
+    '  kmotion render <scene.html> [options]\n' +
+    '  kmotion caption <video.mp4> --words captions.json [options]\n' +
+    '  kmotion looks list [--json]\n' +
+    '  kmotion styles list [--json]\n' +
+    '\n' +
+    'render options:\n' +
+    '  --fps N           frames per second (default 30)\n' +
+    '  --out FILE        output MP4 path (default ./reel.mp4)\n' +
+    '  --width W         viewport width (default 1080)\n' +
+    '  --height H        viewport height (default 1920)\n' +
+    '  --crf N           x264 quality, lower = better (default 18)\n' +
+    '  --preset NAME     x264 preset: ultrafast|veryfast|medium|slow (default veryfast)\n' +
+    '  --blur            enable sub-frame motion blur (tmix avg)\n' +
+    '  --blur-samples N  sub-captures per frame when blurring (default 8)\n' +
+    '  --look NAME       token-system look (cyber|paper|midnight|blueprint|kinetic)\n' +
+    '  --style NAME      animation style plugin (glitch-cyber|blueprint|kinetic-type)\n' +
+    '                    --style implies its look; --look overrides it\n' +
+    '  --json            print result as JSON to stdout (logs go to stderr)\n' +
+    '\n' +
+    'caption options:\n' +
+    '  --words FILE      captions JSON ({words:[{text,startMs,endMs}]})\n' +
+    '  --out FILE        output MP4 path (default ./captioned.mp4)\n' +
+    '  --font FILE       TTF/OTF font (default: resolved Inter/JetBrains)\n' +
+    '  --look NAME       look tokens for caption colors\n' +
+    '  --json            print result as JSON to stdout\n' +
+    '\n' +
+    'Exit codes: 0 = success, 1 = error, 2 = quality-gate fail.'
+  );
+  process.exit(exitCode == null ? 0 : exitCode);
+}
+
+function getFlag(args, flag, def) {
+  const i = args.indexOf(flag);
+  if (i < 0) return def;
+  if (args[i + 1] != null && !String(args[i + 1]).startsWith('--')) return args[i + 1];
+  return def;
+}
+function hasFlag(args, flag) { return args.indexOf(flag) >= 0; }
+
+function runFfmpeg(args) {
+  return new Promise((resolve, reject) => {
+    const ff = spawn('ffmpeg', args, { stdio: ['ignore', 'ignore', 'pipe'] });
+    let err = '';
+    ff.stderr.on('data', (d) => { err += d.toString(); });
+    ff.on('close', (code) => {
+      if (code === 0) resolve();
+      else reject(new Error('ffmpeg failed (code ' + code + '):\n' + err.slice(-3000)));
+    });
+    ff.on('error', reject);
+  });
+}
+
+/* ------------------------------------------------------------------ */
+/* render                                                              */
+/* ------------------------------------------------------------------ */
+
+async function cmdRender(args) {
+  const scene = args[0];
+  if (!scene || scene.startsWith('--')) {
+    console.error('error: render needs a <scene.html> argument.\n');
+    console.error('fix: kmotion render path/to/scene.html --out reel.mp4\n');
+    usage(1);
+  }
+  if (!fs.existsSync(scene)) {
+    console.error(`error: scene file not found: ${scene}`);
+    console.error('fix: check the path — it must point to an HTML file with window.__km.');
+    process.exit(1);
+  }
+  const fps = parseInt(getFlag(args, '--fps', '30'), 10);
+  const out = path.resolve(getFlag(args, '--out', 'reel.mp4'));
+  const width = parseInt(getFlag(args, '--width', '1080'), 10);
+  const height = parseInt(getFlag(args, '--height', '1920'), 10);
+  const crf = parseInt(getFlag(args, '--crf', '18'), 10);
+  const preset = getFlag(args, '--preset', null);
+  const blur = hasFlag(args, '--blur');
+  const blurSamples = parseInt(getFlag(args, '--blur-samples', '8'), 10);
+  const look = getFlag(args, '--look', null);
+  const style = getFlag(args, '--style', null);
+  const json = hasFlag(args, '--json');
+
+  if (!(fps > 0 && fps <= 120)) {
+    console.error(`error: --fps must be 1-120, got "${getFlag(args, '--fps', '30')}"`);
+    process.exit(1);
+  }
+  if (!(width > 0 && height > 0)) {
+    console.error('error: --width/--height must be positive numbers.');
+    process.exit(1);
+  }
+
+  const log = (...m) => { if (!json) console.log(...m); };
+  log(`kmotion render\n  scene : ${scene}\n  out   : ${out}\n  size  : ${width}x${height} @ ${fps}fps\n  crf   : ${crf}` +
+    (blur ? `\n  blur  : sub-frame ×${blurSamples}` : '') +
+    (look ? `\n  look  : ${look}` : '') +
+    (style ? `\n  style : ${style}` : ''));
+  const t0 = Date.now();
+  try {
+    const r = await renderScene({
+      scenePath: scene, fps, out, width, height, crf, preset, blur, blurSamples, look, style,
+      onProgress: (n, total) => { if (!json) process.stderr.write(`\r  frame ${n}/${total}`); }
+    });
+    if (!json) process.stderr.write('\n');
+    const secs = ((Date.now() - t0) / 1000).toFixed(1);
+    const result = {
+      ok: true, command: 'render',
+      scene: path.resolve(scene), out: r.out,
+      frames: r.frames, fps: r.fps, dur: r.dur,
+      width: r.width, height: r.height,
+      blur: !!r.blur, look: look || null, style: style || null,
+      seconds: parseFloat(secs), timings: r.timings || undefined
+    };
+    if (json) console.log(JSON.stringify(result));
+    else console.log(`done: ${r.frames} frames (${r.dur}s) → ${r.out} in ${secs}s` +
+      (r.blur ? ' [motion blur on]' : ''));
+  } catch (e) {
+    const msg = e && e.message ? e.message : String(e);
+    if (json) console.log(JSON.stringify({ ok: false, command: 'render', error: msg }));
+    else {
+      console.error('\nkmotion render failed: ' + msg);
+      if (/__km/.test(msg)) {
+        console.error('fix: the scene HTML must load /__km/km-core.js + /__km/km-runtime.js ' +
+          'and call KM.createScene({ meta, render }). See README quick-start.');
+      } else if (/look not found|style not found/.test(msg)) {
+        console.error('fix: run `kmotion looks list` / `kmotion styles list` for valid names.');
+      }
+    }
+    process.exit(1);
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* caption — burn TikTok-style karaoke captions into a rendered video  */
+/* ------------------------------------------------------------------ */
+
+/** Escape text for drawtext=text='...'. */
+function dtEscape(s) {
+  return String(s)
+    .replace(/\\/g, '\\\\')
+    .replace(/'/g, "\\'")
+    .replace(/:/g, '\\:')
+    .replace(/%/g, '\\%')
+    .replace(/\[/g, '\\[').replace(/\]/g, '\\]')
+    .replace(/;/g, '\\;')
+    .replace(/,/g, '\\,')
+    .replace(/\n/g, ' ')
+    .trim();
+}
+
+/** Resolve a font file: explicit path, then fc-match fallbacks. */
+function resolveFont(explicit) {
+  if (explicit) {
+    if (!fs.existsSync(explicit)) throw new Error('font not found: ' + explicit);
+    return path.resolve(explicit);
+  }
+  const { execSync } = require('child_process');
+  const candidates = ['Inter ExtraBold', 'Inter Bold', 'Inter', 'JetBrains Mono Bold', 'DejaVu Sans Bold'];
+  for (const name of candidates) {
+    try {
+      const f = execSync(`fc-match "${name}" --format="%{file}\n"`, { encoding: 'utf8' }).trim().split('\n')[0];
+      if (f && fs.existsSync(f)) return f;
+    } catch (e) { /* try next */ }
+  }
+  throw new Error('no suitable font found (tried Inter/JetBrains/DejaVu); pass --font explicitly');
+}
+
+async function cmdCaption(args) {
+  const video = args[0];
+  const json = hasFlag(args, '--json');
+  const log = (...m) => { if (!json) console.log(...m); };
+  if (!video || video.startsWith('--')) {
+    console.error('error: caption needs a <video.mp4> argument.\n');
+    console.error('fix: kmotion caption in.mp4 --words captions.json --out out.mp4\n');
+    usage(1);
+  }
+  if (!fs.existsSync(video)) {
+    console.error(`error: video file not found: ${video}`);
+    process.exit(1);
+  }
+  const wordsFile = getFlag(args, '--words', null);
+  if (!wordsFile) {
+    console.error('error: caption needs --words captions.json');
+    console.error('fix: captions JSON shape: {"words":[{"text":"hi","startMs":0,"endMs":300}]}');
+    usage(1);
+  }
+  if (!fs.existsSync(wordsFile)) {
+    console.error(`error: words file not found: ${wordsFile}`);
+    process.exit(1);
+  }
+  const out = path.resolve(getFlag(args, '--out', 'captioned.mp4'));
+  const lookName = getFlag(args, '--look', null);
+
+  let raw;
+  try {
+    raw = JSON.parse(fs.readFileSync(wordsFile, 'utf8'));
+  } catch (e) {
+    console.error(`error: cannot parse ${wordsFile} as JSON: ${e.message}`);
+    process.exit(1);
+  }
+  let words;
+  try {
+    words = normalizeInput(raw).words;
+  } catch (e) {
+    console.error('error: ' + e.message);
+    console.error('fix: use {"words":[{"text":"hi","startMs":0,"endMs":300}, ...]}');
+    process.exit(1);
+  }
+  const { pages } = groupPages(words);
+  if (!pages.length) {
+    console.error('error: no caption pages produced — is the words array empty?');
+    process.exit(1);
+  }
+
+  const look = resolveLook(lookName);
+  const ink = (look && look.colors && look.colors.ink) || '#F2F5FA';
+  const accent = (look && look.colors && look.colors.accent) || '#FFD60A';
+  const fontFile = resolveFont(getFlag(args, '--font', null));
+
+  /** Word-aware wrap: split text into lines of ≤ maxChars. */
+  function wrapLines(text, maxChars) {
+    const words = text.split(/\s+/).filter(Boolean);
+    const lines = [];
+    let cur = '';
+    for (const w of words) {
+      const next = cur ? cur + ' ' + w : w;
+      if (next.length > maxChars && cur) { lines.push(cur); cur = w; }
+      else cur = next;
+    }
+    if (cur) lines.push(cur);
+    return lines.slice(0, 3); // max 3 lines
+  }
+
+  // Layout (9:16 lower third): dim context lines + big active word.
+  const filters = [];
+  const base = `fontfile=${fontFile}:box=1:boxcolor=0x00000099:boxborderw=18`;
+  pages.forEach((pg) => {
+    const ps = (pg.startMs / 1000).toFixed(3), pe = (pg.endMs / 1000).toFixed(3);
+    const pageText = pg.tokens.map((t) => t.text).join(' ');
+    // Dim context: wrapped lines, smaller, stacked above the karaoke word.
+    const lines = wrapLines(pageText, 30);
+    lines.forEach((line, li) => {
+      const yOff = (lines.length - 1 - li) * 62; // stack upward
+      filters.push(
+        `drawtext=${base}:text='${dtEscape(line)}':fontsize=40:fontcolor=${ink}@0.75:` +
+        `x=(w-text_w)/2:y=h*0.60-${yOff}:enable='between(t,${ps},${pe})'`
+      );
+    });
+    // Karaoke: each active word big + accent, centered below the context.
+    pg.tokens.forEach((tk) => {
+      const ws = (tk.fromMs / 1000).toFixed(3), we = (tk.toMs / 1000).toFixed(3);
+      filters.push(
+        `drawtext=${base}:text='${dtEscape(tk.text)}':fontsize=96:fontcolor=${accent}:` +
+        `x=(w-text_w)/2:y=h*0.72:enable='between(t,${ws},${we})':` +
+        `shadowcolor=0x000000cc:shadowx=0:shadowy=4`
+      );
+    });
+  });
+
+  const scriptPath = path.join(os.tmpdir(), 'km-caption-' + process.pid + '-' + Date.now() + '.txt');
+  fs.writeFileSync(scriptPath, '[0:v]' + filters.join(',') + '[out]');
+  log(`kmotion caption\n  video : ${video}\n  words : ${words.length} → ${pages.length} pages\n  font  : ${path.basename(fontFile)}\n  out   : ${out}`);
+  const t0 = Date.now();
+  try {
+    await runFfmpeg([
+      '-y', '-i', video,
+      '-filter_complex_script', scriptPath,
+      '-map', '[out]', '-map', '0:a?',
+      '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-crf', '18', '-preset', 'veryfast',
+      '-c:a', 'copy',
+      '-movflags', '+faststart',
+      out
+    ]);
+  } catch (e) {
+    const msg = e && e.message ? e.message : String(e);
+    if (json) console.log(JSON.stringify({ ok: false, command: 'caption', error: msg }));
+    else console.error('\nkmotion caption failed: ' + msg);
+    process.exit(1);
+  } finally {
+    try { fs.unlinkSync(scriptPath); } catch (e) { /* ignore */ }
+  }
+  const secs = ((Date.now() - t0) / 1000).toFixed(1);
+  if (json) {
+    console.log(JSON.stringify({
+      ok: true, command: 'caption', in: path.resolve(video), out,
+      words: words.length, pages: pages.length,
+      font: path.basename(fontFile), seconds: parseFloat(secs)
+    }));
+  } else console.log('done: ' + out);
+}
+
+/* ------------------------------------------------------------------ */
+/* looks                                                               */
+/* ------------------------------------------------------------------ */
+
+function cmdLooks(args) {
+  const json = hasFlag(args, '--json');
+  if (args[0] === 'list') {
+    const dir = path.join(__dirname, '..', 'looks');
+    const files = fs.readdirSync(dir).filter((f) => f.endsWith('.json'));
+    const looks = files.map((f) => {
+      const l = JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8'));
+      return { name: l.name, description: l.description || '' };
+    });
+    if (json) console.log(JSON.stringify({ ok: true, command: 'looks', looks }));
+    else looks.forEach((l) => console.log(`  ${l.name} — ${l.description}`));
+    return;
+  }
+  console.error('error: usage: kmotion looks list [--json]\n');
+  usage(1);
+}
+
+function cmdStyles(args) {
+  const json = hasFlag(args, '--json');
+  if (args[0] === 'list') {
+    const dir = path.join(__dirname, '..', 'styles');
+    const files = fs.readdirSync(dir).filter((f) => f.endsWith('.json'));
+    const styles = files.map((f) => {
+      const s = JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8'));
+      const hasJs = fs.existsSync(path.join(dir, s.name + '.js'));
+      return {
+        name: s.name,
+        description: s.description || '',
+        look: s.look || null,
+        choreography: s.choreography || {},
+        module: hasJs
+      };
+    });
+    if (json) console.log(JSON.stringify({ ok: true, command: 'styles', styles }));
+    else styles.forEach((s) =>
+      console.log(`  ${s.name} — ${s.description} [look: ${s.look}]`));
+    return;
+  }
+  console.error('error: usage: kmotion styles list [--json]\n');
+  usage(1);
+}
+
+/* ------------------------------------------------------------------ */
+
+async function main() {
+  const args = process.argv.slice(2);
+  const cmd = args[0];
+  if (!cmd || cmd === '-h' || cmd === '--help') usage(0);
+  if (cmd === '-v' || cmd === '--version') { console.log(VERSION); return; }
+  if (cmd === 'render') return cmdRender(args.slice(1));
+  if (cmd === 'caption') return cmdCaption(args.slice(1));
+  if (cmd === 'looks') return cmdLooks(args.slice(1));
+  if (cmd === 'styles') return cmdStyles(args.slice(1));
+  console.error(`error: unknown command "${cmd}".\n`);
+  usage(1);
+}
+
+main().catch((e) => {
+  console.error('\nkmotion failed: ' + (e && e.message ? e.message : e));
+  process.exit(1);
+});

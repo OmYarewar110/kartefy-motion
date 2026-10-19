@@ -1,6 +1,6 @@
 {
   "name": "kartefy-motion",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "kartefy-motion: autonomous 9:16 short-form motion graphics engine (Phase 1: deterministic core)",
   "main": "index.js",
   "directories": {

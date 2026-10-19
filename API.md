@@ -74,7 +74,11 @@ All **(pure)**.
 
 `KM.createCaptions(container, data, opts)` → `{update(t), pages, elements}`
 - `data: {pages: [{startMs, endMs, tokens: [{text, fromMs, toMs}]}]}`
-- `opts: {look?, zone?, maxLines?, dimOpacity?}` — `zone` defaults to 9:16 lower third `{x:90, y:1190, w:900}`.
+- `opts: {look?, zone?, maxLines?, dimOpacity?, strokePx?}` — `zone` defaults to 9:16 lower third `{x:90, y:1190, w:900}`.
+- v0.2.2: every word gets a readability **outline** (8-direction stacked
+  text-shadow stroke, default 3px black + soft drop shadow) so captions stay
+  legible over bright/busy backgrounds. `strokePx: 0` disables; stroke color
+  via `look.colors.stroke`.
 - `update(t)` is seek-pure: shows the live page, highlights the active word (scale pop + accent + pill), dims the rest.
 
 ## km-fx — effects (in-page)
@@ -98,11 +102,19 @@ Style module shape: `{setup(stage,params)→state, update(state,t), enter(el,t,t
 
 ## lib/km-engine.js (Node)
 
-`renderScene(opts)` → `Promise<{frames, fps, dur, width, height, out, blur, dedupHits}>`
+`renderScene(opts)` → `Promise<{frames, fps, dur, width, height, out, blur, dedupHits, timings}>`
 - Required: `scenePath`, `out`. Validated with helpful errors.
-- Options: `fps` (30), `width`/`height` (1080/1920), `crf` (18), `jpegQuality` (92),
-  `blur` (false), `blurSamples` (8), `look` (name|path), `style` (name|path),
-  `onProgress(n,total)`.
+- Options: `fps` (30), `width`/`height` (1080/1920), `crf` (18),
+  `preset` ('veryfast'; x264 speed/efficiency — v0.2.2 default, ~2x faster
+  than `medium` at equal CRF quality; PSNR-verified transparent),
+  `jpegQuality` (92), `blur` (false), `blurSamples` (8), `look` (name|path),
+  `style` (name|path), `onProgress(n,total)`.
+  `KMOTION_PRESET` env overrides the default preset.
+- `timings` (v0.2.2): per-phase ms `{serve, browser, load, capture,
+  encode_drain, capture_seek, capture_shot, capture_motion}` — surfaced
+  in `kmotion render --json` output for agent-side profiling.
+- Page load uses `domcontentloaded` (v0.2.2; was `networkidle0`) — the
+  `__km.ready()` gate is the real readiness signal, saving ~2s per render.
 - `style` implies its `look`; explicit `look` overrides.
 - Throws with `fix:` hints on bad input.
 
@@ -129,7 +141,7 @@ Style module shape: `{setup(stage,params)→state, update(state,t), enter(el,t,t
 
 ```
 kmotion render <scene.html> [--fps 30] [--out reel.mp4] [--width 1080]
-        [--height 1920] [--crf 18] [--blur] [--blur-samples 8]
+        [--height 1920] [--crf 18] [--preset veryfast] [--blur] [--blur-samples 8]
         [--look NAME] [--style NAME] [--json]
 kmotion caption <video.mp4> --words words.json [--out out.mp4]
         [--font font.ttf] [--look NAME] [--json]

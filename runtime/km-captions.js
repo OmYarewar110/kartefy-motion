@@ -10,7 +10,8 @@
  *               (falls back to window.KM_LOOK, then built-in defaults),
  *   zone      — { x, y, w } caption zone in px (default: 9:16 lower third),
  *   maxLines  — default 3,
- *   dimOpacity— inactive word opacity (default 0.42)
+ *   dimOpacity— inactive word opacity (default 0.42),
+ *   strokePx  — outline width in px for readability (default 3, 0 = off)
  * }
  *
  * update(t) is SEEK-PURE: given the same t it always shows the same page
@@ -31,9 +32,11 @@
       ink: '#F2F5FA',        // base caption text
       accent: '#FFD60A',     // active word
       pill: 'rgba(0,0,0,0.55)',
+      stroke: '#000000',     // outline color (readability over any bg)
       dim: null              // computed from ink at dimOpacity
     },
-    type: { display: 'Inter, system-ui, sans-serif' }
+    type: { display: 'Inter, system-ui, sans-serif' },
+    strokePx: 3              // outline width in px
   };
 
   function hexToRgb(h) {
@@ -66,6 +69,23 @@
 
     var fontFamily = (look.type && look.type.display) || DEFAULTS.type.display;
 
+    // Readability outline: 8-direction stroke via stacked text-shadows
+    // (robust in Chromium; -webkit-text-stroke eats into glyphs).
+    // Plus a soft drop shadow for separation from busy backgrounds.
+    var strokePx = opts.strokePx != null ? opts.strokePx : DEFAULTS.strokePx;
+    var strokeColor = colors.stroke || DEFAULTS.colors.stroke;
+    var outlineShadows = [];
+    if (strokePx > 0) {
+      for (var a = 0; a < 8; a++) {
+        var ang = a * Math.PI / 4;
+        outlineShadows.push(
+          Math.round(Math.cos(ang) * strokePx) + 'px ' +
+          Math.round(Math.sin(ang) * strokePx) + 'px 0 ' + strokeColor);
+      }
+    }
+    outlineShadows.push('0 6px 18px rgba(0,0,0,0.45)');
+    var outline = outlineShadows.join(', ');
+
     // Build one absolutely-stacked page div per page; only the live one
     // is visible. Tokens are inline-block spans so the active word can
     // scale without reflowing its neighbors.
@@ -90,6 +110,7 @@
         s.style.padding = '2px 6px';
         s.style.borderRadius = '12px';
         s.style.color = colors.dim;
+        s.style.textShadow = outline;
         s.style.willChange = 'transform, color, background';
         pd.appendChild(s);
         pd.appendChild(document.createTextNode(' '));
